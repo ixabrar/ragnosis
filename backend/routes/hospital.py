@@ -21,6 +21,7 @@ from werkzeug.utils import secure_filename
 from database import get_db
 from utils.jwt_helper import generate_token, require_role, require_auth
 from config import Config
+from services.enhancement_engine import check_prescription_safety, build_dpdp_consent_notice
 
 hospital_bp = Blueprint("hospital", __name__)
 
@@ -323,6 +324,12 @@ def receptionist_my_patients():
 #  PRESCRIPTIONS
 # ═══════════════════════════════════════════════
 
+@hospital_bp.route("/consent", methods=["GET"])
+@require_auth
+def consent_notice():
+    return jsonify(build_dpdp_consent_notice()), 200
+
+
 @hospital_bp.route("/prescriptions", methods=["POST"])
 @require_role("doctor")
 def write_prescription():
@@ -360,6 +367,8 @@ def write_prescription():
     if not medicines:
         return jsonify({"error": "At least one valid medicine is required"}), 400
 
+    safety = check_prescription_safety(patient, medicines)
+
     prescription = {
         "patient_id": data["patient_id"],
         "patient_name": patient.get("name", ""),
@@ -372,10 +381,13 @@ def write_prescription():
         "created_at": datetime.utcnow(),
     }
     result = db.prescriptions.insert_one(prescription)
-    return jsonify({
+    response = {
         "message": f"Prescription saved for {patient.get('name')} ✅",
         "prescription_id": str(result.inserted_id),
-    }), 201
+    }
+    if safety:
+        response["safety_review"] = safety
+    return jsonify(response), 201
 
 
 @hospital_bp.route("/prescriptions/my", methods=["GET"])

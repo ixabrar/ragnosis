@@ -5,11 +5,14 @@ import re
 
 auth_bp = Blueprint("auth", __name__)
 
+
 def is_valid_email(email):
     return re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email)
 
+
 def is_valid_mobile(mobile):
     return re.match(r"^\d{10}$", mobile)
+
 
 @auth_bp.route("/register", methods=["POST"])
 def register():
@@ -39,9 +42,10 @@ def register():
         "user": {
             "id": user_id,
             "name": data["name"],
-            "email": data["email"]
+            "email": data["email"],
         }
     }), 201
+
 
 @auth_bp.route("/login", methods=["POST"])
 def login():
@@ -75,6 +79,7 @@ def login():
             "gender": user.get("gender", ""),
         }
     }), 200
+
 
 @auth_bp.route("/me", methods=["GET"])
 def me():

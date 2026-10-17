@@ -11,9 +11,19 @@ from services.text_extractor import (
 )
 from services.bert_summarizer import summarize_medical_text, simplify_medical_summary, build_recommendations
 from services.doctor_service import get_suggested_doctors, get_specialist_advice
+from services.enhancement_engine import build_report_confidence, compare_reports_temporally
 from config import Config
 
 reports_bp = Blueprint("reports", __name__)
+
+
+def _safe_remove(path: str):
+    """Delete a file without raising if it doesn't exist."""
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 
 @reports_bp.route("/upload", methods=["POST"])
@@ -30,7 +40,6 @@ def upload_report():
     if not allowed_file(file.filename, Config.ALLOWED_EXTENSIONS):
         return jsonify({"error": f"File type '{ext}' not allowed. Use PDF, JPG, PNG, or JPEG"}), 400
 
-    # Save file
     unique_name = f"{uuid.uuid4().hex}.{ext}"
     save_path = os.path.join(Config.UPLOAD_FOLDER, unique_name)
     file.save(save_path)
@@ -38,15 +47,11 @@ def upload_report():
     current_app.logger.info(f"[UPLOAD] Saved file: {save_path} (ext={ext})")
 
     try:
-        # ── Step 1: Extract text ──────────────────────────────────────────────
         current_app.logger.info(f"[UPLOAD] Extracting text from {ext} file...")
         try:
             raw_text = extract_text(save_path, ext)
         except Exception as ocr_err:
-            # Log the full traceback so you can see exactly what went wrong
-            current_app.logger.error(
-                f"[UPLOAD] Text extraction failed:\n{traceback.format_exc()}"
-            )
+            current_app.logger.error(f"[UPLOAD] Text extraction failed:\n{traceback.format_exc()}")
             _safe_remove(save_path)
             return jsonify({
                 "error": "ocr_failed",
@@ -56,8 +61,6 @@ def upload_report():
 
         current_app.logger.info(f"[UPLOAD] Extracted {len(raw_text)} chars")
 
-        # ── Guard 1: unreadable file ──────────────────────────────────────────
-        # Use 20 chars (not 50) — screenshots may produce short but valid text
         if len(raw_text.strip()) < 20:
             _safe_remove(save_path)
             return jsonify({
@@ -68,7 +71,6 @@ def upload_report():
                 ),
             }), 400
 
-        # ── Guard 2: out-of-knowledge-base check ──────────────────────────────
         if not is_medical_report(raw_text):
             _safe_remove(save_path)
             return jsonify({
@@ -79,43 +81,32 @@ def upload_report():
                 ),
             }), 422
 
-        # ── Step 2: Analyse ───────────────────────────────────────────────────
         current_app.logger.info("[UPLOAD] Extracting metrics...")
         try:
             metrics = extract_medical_metrics(raw_text)
             report_type = detect_report_type(raw_text)
             current_app.logger.info(f"[UPLOAD] Metrics: {metrics} | Type: {report_type}")
         except Exception as metrics_err:
-            current_app.logger.error(
-                f"[UPLOAD] Metrics extraction failed:\n{traceback.format_exc()}"
-            )
+            current_app.logger.error(f"[UPLOAD] Metrics extraction failed:\n{traceback.format_exc()}")
             _safe_remove(save_path)
             return jsonify({
                 "error": "metrics_failed",
                 "message": f"Metric extraction failed: {str(metrics_err)}",
             }), 500
 
-        # ── Step 3: Summarize ─────────────────────────────────────────────────
         current_app.logger.info("[UPLOAD] Summarizing...")
         try:
             summary_raw = summarize_medical_text(raw_text)
             summary = simplify_medical_summary(summary_raw, metrics)
             recommendations = build_recommendations(metrics)
             current_app.logger.info("[UPLOAD] Summary complete")
-        except Exception as summary_err:
-            current_app.logger.error(
-                f"[UPLOAD] Summarization failed:\n{traceback.format_exc()}"
-            )
-            # Don't fail the whole upload just because summary failed —
-            # use a fallback summary instead
+        except Exception:
             summary = "Summary could not be generated for this report."
             recommendations = []
             current_app.logger.warning("[UPLOAD] Using fallback summary due to error")
 
-        # ── Step 4: Save to DB ────────────────────────────────────────────────
         current_app.logger.info("[UPLOAD] Saving to DB...")
 
-        # Calculate suggested doctors based on report type
         suggested_doctors = get_suggested_doctors(report_type)
         is_critical = any(r.get("is_critical") for r in recommendations)
         specialist_advice = get_specialist_advice(report_type)
@@ -137,9 +128,7 @@ def upload_report():
             })
             current_app.logger.info(f"[UPLOAD] Saved report: {report_id}")
         except Exception as db_err:
-            current_app.logger.error(
-                f"[UPLOAD] DB save failed:\n{traceback.format_exc()}"
-            )
+            current_app.logger.error(f"[UPLOAD] DB save failed:\n{traceback.format_exc()}")
             _safe_remove(save_path)
             return jsonify({
                 "error": "db_error",
@@ -147,16 +136,19 @@ def upload_report():
             }), 500
 
     except Exception as e:
-        # Final catch-all — should never reach here but just in case
         _safe_remove(save_path)
-        current_app.logger.error(
-            f"[UPLOAD] Unexpected error:\n{traceback.format_exc()}"
-        )
+        current_app.logger.error(f"[UPLOAD] Unexpected error:\n{traceback.format_exc()}")
         return jsonify({
             "error": "unexpected_error",
             "message": f"Unexpected error: {str(e)}",
             "details": traceback.format_exc(),
         }), 500
+
+    confidence = build_report_confidence({
+        "raw_text": raw_text,
+        "summary": summary,
+        "metrics": metrics,
+    })
 
     return jsonify({
         "message": "Report uploaded and analyzed successfully! ✅",
@@ -168,16 +160,8 @@ def upload_report():
         "is_critical": is_critical,
         "suggested_doctors": suggested_doctors,
         "specialist_advice": specialist_advice,
+        "analysis_confidence": confidence,
     }), 201
-
-
-def _safe_remove(path: str):
-    """Delete a file without raising if it doesn't exist."""
-    try:
-        if path and os.path.exists(path):
-            os.remove(path)
-    except Exception as e:
-        pass  # best-effort cleanup
 
 
 @reports_bp.route("/", methods=["GET"])
@@ -199,15 +183,24 @@ def get_report(report_id):
     report.pop("file_path", None)
     if not report.get("recommendations") and report.get("metrics"):
         report["recommendations"] = build_recommendations(report["metrics"])
-    
-    # Ensure is_critical and suggested_doctors are present
+
     if "is_critical" not in report:
         report["is_critical"] = any(r.get("is_critical") for r in (report.get("recommendations") or []))
     if not report.get("suggested_doctors"):
         report["suggested_doctors"] = get_suggested_doctors(report.get("report_type", "General Medical Report"))
     if not report.get("specialist_advice"):
         report["specialist_advice"] = get_specialist_advice(report.get("report_type", "General Medical Report"))
-        
+
+    all_reports = get_reports_by_user(request.user_id)
+    previous_report = None
+    for idx, r in enumerate(all_reports):
+        if r.get("_id") == report_id and idx + 1 < len(all_reports):
+            previous_report = all_reports[idx + 1]
+            break
+    report["analysis_confidence"] = build_report_confidence(report, previous_report)
+    if previous_report:
+        report["temporal_analysis"] = compare_reports_temporally(previous_report, report)
+
     return jsonify(report), 200
 
 

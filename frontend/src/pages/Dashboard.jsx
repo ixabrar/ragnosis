@@ -1281,6 +1281,8 @@ function ChatbotTab({ reports }) {
     const [input, setInput] = useState('')
     const [loading, setLoading] = useState(false)
     const [selectedReport, setSelectedReport] = useState(reports[0]?._id || null)
+    const [responseMode, setResponseMode] = useState('standard')
+    const [lastConfidence, setLastConfidence] = useState(null)
     const messagesEndRef = useRef(null)
     const SUGGESTIONS = ['What does my hemoglobin level mean?', 'Is my blood sugar normal?', 'Explain my cholesterol results', 'Any abnormal values in my report?']
 
@@ -1297,8 +1299,10 @@ function ChatbotTab({ reports }) {
                 message: userMsg,
                 report_id: selectedReport,
                 history: messages.slice(-6),
+                mode: responseMode,
             })
             setMessages(prev => [...prev, { role: 'assistant', content: res.data.response }])
+            setLastConfidence(res.data.confidence || null)
         } catch (err) {
             setMessages(prev => [...prev, { role: 'assistant', content: '⚠️ Sorry, I couldn\'t connect. Please check your Groq API key and try again.' }])
         } finally {
@@ -1310,19 +1314,39 @@ function ChatbotTab({ reports }) {
         <div style={{ maxWidth: 760, margin: '0 auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
                 <h2 style={{ fontWeight: 800, fontSize: '1.5rem' }}>🤖 AI Medical Assistant</h2>
-                {reports.length > 0 && (
-                    <select
-                        className="input"
-                        style={{ width: 'auto', fontSize: '0.85rem', padding: '8px 12px' }}
-                        id="report-select"
-                        value={selectedReport || ''}
-                        onChange={e => setSelectedReport(e.target.value || null)}
-                    >
-                        <option value="">Chat without report context</option>
-                        {reports.map(r => <option key={r._id} value={r._id}>{r.original_name || r.filename}</option>)}
-                    </select>
-                )}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        Mode
+                        <select
+                            className="input"
+                            style={{ width: 'auto', fontSize: '0.8rem', padding: '7px 10px' }}
+                            value={responseMode}
+                            onChange={e => setResponseMode(e.target.value)}
+                        >
+                            <option value="standard">Standard</option>
+                            <option value="strict">Strict / abstain</option>
+                        </select>
+                    </label>
+                    {reports.length > 0 && (
+                        <select
+                            className="input"
+                            style={{ width: 'auto', fontSize: '0.85rem', padding: '8px 12px' }}
+                            id="report-select"
+                            value={selectedReport || ''}
+                            onChange={e => setSelectedReport(e.target.value || null)}
+                        >
+                            <option value="">Chat without report context</option>
+                            {reports.map(r => <option key={r._id} value={r._id}>{r.original_name || r.filename}</option>)}
+                        </select>
+                    )}
+                </div>
             </div>
+            {lastConfidence && (
+                <div style={{ marginBottom: 14, padding: '10px 14px', borderRadius: 12, border: '1px solid var(--border)', background: 'var(--bg-card)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    Confidence: <strong>{Math.round((lastConfidence.confidence || 0) * 100)}%</strong>
+                    {lastConfidence.abstain && <span style={{ marginLeft: 8, color: '#f59e0b' }}>abstaining on weak evidence</span>}
+                </div>
+            )}
 
             {/* Quick suggestions */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
