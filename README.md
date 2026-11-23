@@ -1320,3 +1320,4 @@ Built with ❤️ using:
 - [React](https://react.dev) + [Vite](https://vitejs.dev) — frontend framework
 - [MongoDB Atlas](https://www.mongodb.com/atlas) — cloud database
 - [Framer Motion](https://www.framer.com/motion/) — animations
+"# ragnosis" 
